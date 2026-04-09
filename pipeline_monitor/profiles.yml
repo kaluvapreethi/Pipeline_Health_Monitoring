@@ -1,0 +1,14 @@
+franchise_intelligent_agent:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "acct" # e.g., xy12345.us-east-1
+      user: "uname"
+      password: "pwd"
+      role: TB_DATA_ENGINEER  # Or the role you granted Cortex access to
+      warehouse: TB_DE_WH
+      database: SNOWFLAKE_INTELLIGENCE
+      schema: FRANCHISE_INTELLIGENT_AGENT
+      threads: 4
+      client_session_keep_alive: False

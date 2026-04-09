@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: snowflake_account_usage
+    database: snowflake
+    schema: account_usage
+    tables:
+      - name: query_history
+        description: >
+          Full Snowflake account query history with 365-day retention.
+          Used to extract dbt pipeline run metadata via query_tag parsing.
