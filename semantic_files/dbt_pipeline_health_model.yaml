@@ -1,0 +1,219 @@
+name: dbt_pipeline_health_model
+description: >
+  dbt pipeline health metrics for the Tasty Bytes project. Covers model run
+  performance, failure rates, cost (GB scanned), and warehouse efficiency.
+  Use this for questions about specific models, trends, failure counts,
+  and performance regressions.
+
+tables:
+  - name: fct_dbt_model_health
+    base_table:
+      database: tb_101
+      schema: pipeline_monitor_marts
+      table: fct_dbt_model_health
+    description: >
+      One row per dbt model showing aggregated health metrics: run counts,
+      success rates, average duration, data scanned, and trend signals.
+
+    primary_key:
+      columns: [dbt_model_name]
+
+    dimensions:
+      - name: dbt_model_name
+        expr: dbt_model_name
+        description: Name of the dbt model (e.g. stg_order_header, fct_franchise_revenue)
+        data_type: VARCHAR
+        synonyms: [model, model name, dbt model, pipeline step]
+
+      - name: dbt_materialization
+        expr: dbt_materialization
+        description: How the model materialises (table, view, incremental, ephemeral)
+        data_type: VARCHAR
+        synonyms: [materialization, type, model type]
+
+      - name: warehouse_name
+        expr: warehouse_name
+        description: Snowflake warehouse that ran the model
+        data_type: VARCHAR
+        synonyms: [warehouse, compute, virtual warehouse]
+
+      - name: is_slowing_down
+        expr: is_slowing_down
+        description: True if the model's last 7-day average is >25% slower than its 30-day average
+        data_type: BOOLEAN
+        synonyms: [regression, getting slower, performance degradation]
+
+    measures:
+      - name: total_runs
+        expr: SUM(total_runs)
+        description: Total number of times this model has been run
+        data_type: NUMBER
+        synonyms: [runs, executions, invocations]
+
+      - name: total_failures
+        expr: SUM(total_failures)
+        description: Total number of failed runs
+        data_type: NUMBER
+        synonyms: [failures, errors, broken runs]
+
+      - name: success_rate_pct
+        expr: AVG(success_rate_pct)
+        description: Percentage of runs that succeeded (0–100)
+        data_type: FLOAT
+        synonyms: [success rate, reliability, pass rate]
+
+      - name: avg_elapsed_seconds
+        expr: AVG(avg_elapsed_seconds)
+        description: Average run duration in seconds
+        data_type: FLOAT
+        synonyms: [average duration, average runtime, how long it takes]
+
+      - name: p95_elapsed_seconds
+        expr: AVG(p95_elapsed_seconds)
+        description: 95th percentile run duration in seconds
+        data_type: FLOAT
+        synonyms: [p95, worst case, tail latency]
+
+      - name: avg_gb_scanned
+        expr: AVG(avg_gb_scanned)
+        description: Average gigabytes scanned per run (cost proxy)
+        data_type: FLOAT
+        synonyms: [data scanned, cost, bytes, GB, gigabytes]
+
+      - name: health_score
+        expr: AVG(health_score)
+        description: Composite health score (0–100). Deductions for failures, spill, and regressions.
+        data_type: FLOAT
+        synonyms: [health, score, pipeline health, quality]
+
+      - name: spill_run_count
+        expr: SUM(spill_run_count)
+        description: Number of runs where data spilled to disk (warehouse too small)
+        data_type: NUMBER
+        synonyms: [spill, disk spill, memory spill, warehouse too small]
+
+  - name: fct_dbt_run_metrics
+    base_table:
+      database: tb_101
+      schema: pipeline_monitor_marts
+      table: fct_dbt_run_metrics
+    description: >
+      One row per individual dbt model run. Used for time-series analysis
+      and finding specific failed runs with their error messages.
+
+    primary_key:
+      columns: [query_id]
+
+    dimensions:
+      - name: dbt_model_name
+        expr: dbt_model_name
+        description: Name of the dbt model
+        data_type: VARCHAR
+
+      - name: execution_status
+        expr: execution_status
+        description: SUCCESS or FAIL
+        data_type: VARCHAR
+        synonyms: [status, result, outcome]
+
+      - name: failure_category
+        expr: failure_category
+        description: AI-classified failure type (timeout, schema_drift, logic_error, etc.)
+        data_type: VARCHAR
+        synonyms: [category, failure type, error type, root cause]
+
+      - name: run_date
+        expr: run_date
+        description: Date the model ran
+        data_type: DATE
+        synonyms: [date, when, day]
+
+      - name: warehouse_name
+        expr: warehouse_name
+        description: Warehouse that ran the model
+        data_type: VARCHAR
+
+    time_dimensions:
+      - name: run_date
+        expr: run_date
+        description: Date dimension for time-based trend analysis
+        data_type: DATE
+
+    measures:
+      - name: total_elapsed_seconds
+        expr: AVG(total_elapsed_seconds)
+        description: Average elapsed time in seconds
+        data_type: FLOAT
+
+      - name: gb_scanned
+        expr: SUM(gb_scanned)
+        description: Total GB scanned
+        data_type: FLOAT
+
+      - name: failure_count
+        expr: SUM(CASE WHEN execution_status = 'FAIL' THEN 1 ELSE 0 END)
+        description: Number of failed runs
+        data_type: NUMBER
+
+verified_queries:
+  - name: most_unreliable_models
+    question: "Which models have the lowest success rates?"
+    sql: >
+      SELECT dbt_model_name, success_rate_pct, total_runs, total_failures
+      FROM fct_dbt_model_health
+      WHERE total_runs >= 5
+      ORDER BY success_rate_pct ASC
+      LIMIT 10
+
+  - name: slowest_models
+    question: "Which models take the longest to run on average?"
+    sql: >
+      SELECT dbt_model_name, avg_elapsed_seconds, p95_elapsed_seconds, total_runs
+      FROM fct_dbt_model_health
+      ORDER BY avg_elapsed_seconds DESC
+      LIMIT 10
+
+  - name: models_getting_slower
+    question: "Which models are slowing down recently?"
+    sql: >
+      SELECT dbt_model_name, avg_elapsed_last_7d, avg_elapsed_last_30d,
+             round((avg_elapsed_last_7d / nullif(avg_elapsed_last_30d,0) - 1) * 100, 1) as pct_slower
+      FROM fct_dbt_model_health
+      WHERE is_slowing_down = true
+      ORDER BY pct_slower DESC
+
+  - name: failures_last_7_days
+    question: "How many failures happened in the last 7 days by model?"
+    sql: >
+      SELECT dbt_model_name, count(*) as failure_count
+      FROM fct_dbt_run_metrics
+      WHERE execution_status = 'FAIL'
+        AND run_date >= DATEADD('day', -7, CURRENT_DATE())
+      GROUP BY 1
+      ORDER BY failure_count DESC
+
+  - name: failures_by_category
+    question: "What types of failures are most common?"
+    sql: >
+      SELECT failure_category, count(*) as count
+      FROM fct_dbt_run_metrics
+      WHERE execution_status = 'FAIL'
+        AND failure_category IS NOT NULL
+      GROUP BY 1
+      ORDER BY count DESC
+
+  - name: most_expensive_models
+    question: "Which models scan the most data (highest cost)?"
+    sql: >
+      SELECT dbt_model_name, avg_gb_scanned, total_gb_scanned, total_runs
+      FROM fct_dbt_model_health
+      ORDER BY total_gb_scanned DESC
+      LIMIT 10
+
+  - name: overall_health_ranking
+    question: "Show me a health ranking of all models"
+    sql: >
+      SELECT dbt_model_name, health_score, success_rate_pct,
+             avg_elapsed_seconds, total_runs, is_slowing_down
+      FROM fct_dbt_model_health
+      ORDER BY health_score ASC
